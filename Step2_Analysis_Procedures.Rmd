@@ -1,0 +1,218 @@
+---
+title: "TAP2-Analysis"
+output: html_document
+date: "2023-09-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+all(sapply( c("dplyr","tidyr","cowplot","Seurat","parallel","patchwork","ggplot2","Matrix","latex2exp","ggalluvial","alluvial","readr","ggpubr","stringr","xlsx"), 
+            require, character.only = T))
+source("SeqID.Fct.R")
+```
+
+
+Step 1-1. Locate all files in tsv folders (from Enrich2 output).
+Note: All the corresponding python scripts are included.
+
+<!-- python script -->
+<!-- alldata = pd.HDFStore("pool3_nterm_8_31_exp.h5") -->
+<!-- alldata.keys() -->
+```{r}
+
+enrich_folder <- "Enrich2_U2OS_ICP47"
+
+file_paths <- list.files(path = enrich_folder, recursive = TRUE, full.names = TRUE) %>%
+                         grep("U2OS_ICP47_exp", ., value = TRUE)
+
+# synonymous and variants:
+tsv.file.paths = grep("main_synonymous_counts.tsv|main_variants_counts.tsv", file_paths, value = TRUE)
+
+data.type = "U2OS_ICP47"
+tsv.file.list = lapply(data.type, function(data.type){
+# components:
+comps = strsplit(data.type, "_")[[1]]
+# e.g. "Hela.*Int4|Int4.*Hela"
+# c.f. A.*B|B.*A <-> string including both A and B in any order.
+gen.exp = paste0(paste(comps, collapse = ".*"),"|", paste(rev(comps), collapse = ".*"))
+grep(gen.exp, tsv.file.paths, value = T)  
+}) %>% setNames(data.type)
+
+tsv.file.list["U2OS_ICP47"]
+```
+
+Step 1-2. From Enrich2 kernel, extract AA_CODES
+
+<!-- from enrich2.constants import AA_CODES -->
+<!-- print(AA_CODES) -->
+{'Val': 'V', 'Cys': 'C', 'His': 'H', '*': 'Ter', 'D': 'Asp', 'F': 'Phe', 'H': 'His', 'L': 'Leu', 'N': 'Asn', 'P': 'Pro', 'R': 'Arg', 'T': 'Thr', 'V': 'Val', 'Trp': 'W', 'Ser': 'S', 'Lys': 'K', 'Pro': 'P', '?': '???', 'Arg': 'R', 'Ter': '*', 'Asp': 'D', 'G': 'Gly', 'Phe': 'F', 'Met': 'M', 'Leu': 'L', 'Asn': 'N', 'Tyr': 'Y', 'A': 'Ala', 'C': 'Cys', 'Ile': 'I', 'E': 'Glu', 'Gln': 'Q', 'I': 'Ile', 'K': 'Lys', 'M': 'Met', 'Thr': 'T', 'Q': 'Gln', 'Gly': 'G', 'S': 'Ser', 'W': 'Trp', 'Y': 'Tyr', 'Glu': 'E', 'Ala': 'A', '???': '?'}
+```{r}
+AA_CODES <- list(
+    'Val' = 'V', 'Cys' = 'C', 'His' = 'H', '*' = 'Ter', 'D' = 'Asp',
+    'F' = 'Phe', 'H' = 'His', 'L' = 'Leu', 'N' = 'Asn', 'P' = 'Pro',
+    'R' = 'Arg', 'T' = 'Thr', 'V' = 'Val', 'Trp' = 'W', 'Ser' = 'S',
+    'Lys' = 'K', 'Pro' = 'P', '?' = '???', 'Arg' = 'R', 'Ter' = '*',
+    'Asp' = 'D', 'G' = 'Gly', 'Phe' = 'F', 'Met' = 'M', 'Leu' = 'L',
+    'Asn' = 'N', 'Tyr' = 'Y', 'A' = 'Ala', 'C' = 'Cys', 'Ile' = 'I',
+    'E' = 'Glu', 'Gln' = 'Q', 'I' = 'Ile', 'K' = 'Lys', 'M' = 'Met',
+    'Thr' = 'T', 'Q' = 'Gln', 'Gly' = 'G', 'S' = 'Ser', 'W' = 'Trp',
+    'Y' = 'Tyr', 'Glu' = 'E', 'Ala' = 'A', '???' = '?'
+)
+AA_CODES.df = data.frame(sequence = names(AA_CODES), mut = unlist(AA_CODES))
+
+```
+
+Step 1-3. data processing
+
+Modified from "HDR_Depletion_Data_Merging-Nterm_1_3"
+Generate column names, Sequence IDs of "variant_SeqID_NT" and "variant_SeqID_AA".
+The final output is single_variants_and_synonymous.
+
+Generate column names with format "{}_{}" e.g., brca1_rep1_c_0.
+<!-- alldata_counts = alldata.select('/main/variants/counts') -->
+<!-- alldata_counts.columns = ['{}_{}'.format(x, y) for x, y in zip(alldata_counts.columns.get_level_values(1), alldata_counts.columns.get_level_values(2))] -->
+<!-- syn_counts = alldata.select('/main/synonymous/counts') -->
+<!-- syn_counts.columns = ['{}_{}'.format(x, y) for x, y in zip(syn_counts.columns.get_level_values(1), syn_counts.columns.get_level_values(2))] -->
+
+Generate column vectors called "variant_SeqID_NT" and "variant_SeqID_AA".
+<!-- all_data_merge['variant_SeqID_NT'] = [variant2seqid(v, variant.re_coding) for v in all_data_merge.index]  -->
+<!-- all_data_merge['variant_SeqID_AA'] = [variant2seqid(variant.protein_variant(v), variant.re_protein) for v in all_data_merge.index] -->
+c.f. alldata count & score -> alldata merge
+In this trial, score valeus are not generated.
+```{r}
+# input variables:
+data.type = "U2OS_ICP47"; 
+
+# for(data.type in data.types){
+
+# Step 1. Enrich2 input file for the data type.
+target.files = tsv.file.list[[data.type]];
+
+# read the input files:
+# alldata_counts = alldata.select('/main/variants/counts')
+alldata.path = grep(paste0(data.type,".*main_variants_counts.tsv"), target.files, value = T)
+all.data <- read.table(alldata.path, header = TRUE, sep = "\t")
+# syn_counts = alldata.select('/main/synonymous/counts') 
+syn.path = grep(paste0(data.type,".*main_synonymous_counts.tsv"), target.files, value = T)
+syn.data <- read.table(syn.path , header = TRUE, sep = "\t")
+
+# change column names:
+if(all(paste0(all.data[1,], "_", all.data[2,]) == paste0(syn.data[1,], "_", syn.data[2,]))){
+  print("main_variants_counts and main_synonymous_counts have the same column names")
+}else{
+  print("Error: check the column names for the main_variants_counts and main_synonymous_counts.")
+}
+
+column.names = paste0(all.data[1,], "_", all.data[2,]); column.names[1] = "index"
+# selection is changed to lower capital letter.
+column.names = gsub("Selection","selection",column.names)
+# set the column names to biological_rep x time point.
+syn.df = syn.data %>% setNames(column.names) %>% filter(!index %in% c("selection","timepoint"))
+all.df = all.data %>% setNames(column.names) %>% filter(!index %in% c("selection","timepoint"))
+
+# correct the format (character to numeric)
+syn.df[,-1] = sapply(syn.df[,-1], as.numeric)
+all.df[,-1] = sapply(all.df[,-1], as.numeric)
+
+head(syn.data, 20); head(syn.df, 20);
+
+
+##################################################################################################################################
+# Step 2. all_data_merge -> syn_notwt
+# # Note: The data names are matched with the original python script.
+# # Python script
+# R script
+
+# general expression :
+re_coding <- "(c\\.(?<pos>-?\\d+)(?<pre>[ACGT])>(?<post>[ACGT]) \\(p\\.(?:=|[A-Z][a-z][a-z]-?\\d+[A-Z][a-z][a-z])\\))"
+re_protein <- "(p\\.(?<pre>[A-Z][a-z][a-z])(?<pos>-?\\d+)(?<post>[A-Z][a-z][a-z]))"
+
+# Python script:
+# all_data_merge['variant_SeqID_NT'] = [variant2seqid(v, variant.re_coding) for v in all_data_merge.index] 
+# all_data_merge['variant_SeqID_AA'] = [variant2seqid(variant.protein_variant(v), variant.re_protein) for v in all_data_merge.index]
+
+all_data_merge = all.df %>% cbind.data.frame(., variant_SeqID_NT = sapply(all.df$index, function(v){ variant2seqid(v, re_coding) }),
+                                                variant_SeqID_AA = sapply(all.df$index, function(v){ variant2seqid(protein_variant(v), re_protein) }))
+
+# synonymous_mutations = all_data_merge.loc[all_data_merge['variant_SeqID_AA'] == 'NA']
+synonymous_mutations = all_data_merge[is.na(all_data_merge$variant_SeqID_AA),]
+# sum(is.na(all.df$variant_SeqID_AA))
+# syn_notwt = synonymous_mutations.drop(['_wt'])
+syn_notwt = synonymous_mutations %>% filter(!index %in% c("_wt"))
+# syn_notwt['variant'] = syn_notwt.index
+syn_notwt = syn_notwt %>% mutate(variant = index)
+# syn_notwt['pos'] = syn_notwt.variant.apply(lambda x: re.findall('\d+', x)[0] if 'p.' in x else 'NA' )
+# syn_notwt['pos'] = syn_notwt['pos'].div(3,0).astype(int)
+syn_notwt$pos = sapply(syn_notwt$variant, function(x) ifelse(grepl('p\\.', x), regmatches(x, regexpr('\\d+', x))[[1]], 'NA'))
+syn_notwt = syn_notwt %>% mutate(pos = as.integer(as.numeric(pos)/3))
+
+# syn_notwt['mut'] = "NA"
+# syn_notwt['ismut'] = 0
+# syn_notwt['syn_or_mut'] = 'syn'
+
+syn_notwt = syn_notwt %>% mutate(mut = NA, ismut = 0, syn_or_mut = "syn")
+
+##################################################################################################################################
+# syn_data_merge to singles
+# # Python script
+# R script
+
+# syn_data_merge['variant_SeqID_NT'] = [variant2seqid(v, variant.re_coding) for v in syn_data_merge.index] 
+# syn_data_merge['variant_SeqID_AA'] = [variant2seqid(v, variant.re_protein) for v in syn_data_merge.index]
+syn_data_merge = syn.df %>% cbind.data.frame(., variant_SeqID_NT = sapply(syn.df$index, function(v){ variant2seqid(v, re_coding) }),
+                                                variant_SeqID_AA = sapply(syn.df$index, function(v){ variant2seqid(v, re_protein) }))
+
+# not_wt = syn_data_merge.drop(['_wt'])
+# not_sy = not_wt.drop(['_sy'])
+not_sy = syn_data_merge %>% filter(!index %in% c("_sy","_wt"))
+# singles = not_sy[np.logical_not(not_sy.index.str.contains(","))]
+# singles['variant'] = singles.index
+singles <- not_sy[!grepl(",", not_sy$index), ] %>% mutate(variant = index)
+# singles['pos'] = singles.variant.apply(lambda x: re.findall('\d+', x)[0] if 'p.' in x else 'NA' )
+# singles.pos = singles.pos.astype(int)
+singles$pos <- ifelse(grepl('p\\.', singles$variant), as.integer(unlist(regmatches(singles$variant, gregexpr('\\d+', singles$variant)))), 'NA')
+singles$pos <- as.integer(singles$pos)
+# singles['mut'] = singles.variant.apply(lambda x: AA_CODES[x[-3:]] if 'p.' in x else "NA")
+singles$mut <- unlist(ifelse(grepl('p\\.', singles$variant), AA_CODES[substr(singles$variant, nchar(singles$variant) - 2, nchar(singles$variant))], NA))
+# singles['ismut'] = 1
+# singles['syn_or_mut'] = 'mut'
+singles$ismut = 1
+singles$syn_or_mut = "mut"
+
+# Combine syn_notwt and singles
+# <!-- syn_and_singles = singles.append(syn_notwt) -->
+
+# all(colnames(singles) == colnames(syn_notwt))
+syn_and_singles <- rbind(singles, syn_notwt) %>% data.frame(.) %>%
+        mutate(mut = ifelse(is.na(mut), "=", mut),
+               group = case_when( mut == '='~ "syn",
+                                  mut == '*'~ "non_sense",
+                                  .default = "mis_sense"
+                            ),
+               group = factor(group, levels = c("mis_sense", "syn", "non_sense")))
+# e.g., "U2OS_Int4_single_variants_and_synonymous_hdr.csv"
+write.csv(syn_and_singles, file = paste0(data.type, '_single_variants_and_synonymous_hdr.csv'), row.names = FALSE)
+saveRDS(syn_and_singles, file = paste0(data.type, '_single_variants_and_synonymous_hdr'))
+
+# }
+
+```
+
+
+```{r}
+long.df = readRDS("U2OS_ICP47_single_variants_and_synonymous_hdr") %>%
+  mutate(score = ICP47_selection_c_0 + ICP47_selection_c_1)
+
+# Summary of the group information.
+table(long.df$group)
+
+# 19 variants with missing values.
+na.ids = sort(c(which(is.na(long.df$ICP47_selection_c_0)),
+                which(is.na(long.df$ICP47_selection_c_1))))
+
+long.df = long.df[-na.ids, ]
+```
+
